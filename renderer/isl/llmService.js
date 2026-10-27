@@ -11,8 +11,8 @@ window.ISL_LLM = {
     if (!url) return '';
 
     // Pension Forms
-    if (url === 'https://nsap.nic.in/apply' || url === 'https://ishaara.browser/nsap-pension') {
-      return 'FORM CONTEXT — NSAP Old Age Pension Application (Ishaara Browser Demo)\n\n' +
+    if (url === 'https://nsap.nic.in/apply' || url === 'https://zenai.browser/nsap-pension') {
+      return 'FORM CONTEXT — NSAP Old Age Pension Application (ZenAI Browser Demo)\n\n' +
         'This is a demo of the National Social Assistance Programme (NSAP) Old Age Pension application form.\n\n' +
         'SECTIONS:\n' +
         '1. Personal Details: Resident type (Urban/Rural), Pension Type (IGNOAPS/IGNWPS/IGNDPS), Name, Gender, DOB, Father/Husband Name, Mobile.\n' +
@@ -23,7 +23,7 @@ window.ISL_LLM = {
     }
 
     // Caste Certificate
-    if (url === 'ishaara://wb-caste-certificate' || url === 'https://ishaara.browser/caste-certificate') {
+    if (url === 'zenai://wb-caste-certificate' || url === 'https://zenai.browser/caste-certificate') {
       return 'FORM CONTEXT — Maharashtra SC/ST/OBC Caste Certificate Application\n\n' +
         'Official Government of Maharashtra form for caste certificates.\n\n' +
         'SECTIONS: Application to, Application For, Personal details, Documents, Birth details, Address, Nationality, Religion, Gender, Blood relation, Local referees, Migration.\n\n' +
@@ -31,7 +31,7 @@ window.ISL_LLM = {
     }
 
     // News Page
-    if (url.indexOf('news') !== -1 || url === 'https://ishaara.browser/news') {
+    if (url.indexOf('news') !== -1 || url === 'https://zenai.browser/news') {
       return 'CONTEXT: News Portal. Summarize top news stories concisely for a deaf user.';
     }
 

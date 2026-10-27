@@ -4,7 +4,10 @@ const { app, BrowserWindow, ipcMain, session, shell } = require('electron');
 const path = require('path');
 
 // Load environment variables
-try { require('dotenv').config(); } catch (e) { }
+const configPath = process.env.ISHAARA_CONFIG_PATH || path.join(__dirname, '.env');
+try { require('dotenv').config({ path: configPath }); } catch (e) { }
+const { saveConfig } = require('./src/config-store');
+const setConfig = (name, value) => saveConfig(configPath, name, value);
 
 let mainWindow = null;
 let mistralService = null;
@@ -25,7 +28,7 @@ function createWindow() {
       sandbox: false,   // Needed for webview IPC
       webSecurity: false,   // Allow local file:// asset loading (Three.js models)
     },
-    title: 'Ishaara',
+    title: 'ZenAI',
     backgroundColor: '#f1f3f4',
     show: false,
     frame: true,
@@ -51,7 +54,10 @@ function createWindow() {
 
 app.whenReady().then(async () => {
   const MistralService = require('./src/mistral-service');
-  mistralService = new MistralService(process.env.MISTRAL_API_KEY || '');
+  mistralService = new MistralService(
+    process.env.MISTRAL_API_KEY || '',
+    process.env.MISTRAL_MODEL || 'mistral-small-latest'
+  );
 
   // ── Microphone permission — allow for renderer + webview ──────────────
   session.defaultSession.setPermissionRequestHandler((webContents, permission, callback) => {
@@ -95,13 +101,13 @@ ipcMain.handle('mistral:query', async (_event, { command, pageContext, history }
 // Config
 ipcMain.handle('config:getApiKey', () => process.env.MISTRAL_API_KEY || '');
 ipcMain.handle('config:setApiKey', (_event, key) => {
-  process.env.MISTRAL_API_KEY = key;
+  key = setConfig('MISTRAL_API_KEY', key);
   if (mistralService) mistralService.updateApiKey(key);
   return true;
 });
-ipcMain.handle('config:getModel', () => process.env.MISTRAL_MODEL || 'mistral-large-latest');
+ipcMain.handle('config:getModel', () => process.env.MISTRAL_MODEL || 'mistral-small-latest');
 ipcMain.handle('config:setModel', (_event, model) => {
-  process.env.MISTRAL_MODEL = model;
+  model = setConfig('MISTRAL_MODEL', model);
   if (mistralService) mistralService.setModel(model);
   return true;
 });
@@ -127,7 +133,48 @@ ipcMain.handle('isl:groqQuery', async (_event, prompt) => {
   }
 });
 ipcMain.handle('config:getGroqKey', () => process.env.GROQ_API_KEY || '');
-ipcMain.handle('config:setGroqKey', (_event, key) => { process.env.GROQ_API_KEY = key; return true; });
+ipcMain.handle('config:setGroqKey', (_event, key) => { setConfig('GROQ_API_KEY', key); return true; });
+
+// ─── Groq Whisper STT ───────────────────────────────────────────────────────
+// Fallback speech-to-text using Groq's Whisper API
+ipcMain.handle('groq:whisper', async (_event, { audioBase64, mimeType }) => {
+  try {
+    const apiKey = process.env.GROQ_API_KEY || '';
+    if (!apiKey) return { success: false, error: 'No Groq API key configured.' };
+
+    // Groq Whisper API expects multipart/form-data with audio file
+    const audioBuffer = Buffer.from(audioBase64, 'base64');
+    
+    // Create form data
+    const form = new FormData();
+    form.append('file', new Blob([audioBuffer], { type: mimeType || 'audio/webm' }), 'audio.webm');
+    form.append('model', 'whisper-large-v3');
+    form.append('language', 'en'); // or 'hi' for Hindi
+    form.append('response_format', 'json');
+
+    const res = await fetch('https://api.groq.com/openai/v1/audio/transcriptions', {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${apiKey}`,
+      },
+      body: form,
+      signal: AbortSignal.timeout(20000),
+    });
+
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      return { success: false, error: err?.error?.message || `Groq Whisper error ${res.status}` };
+    }
+
+    const data = await res.json();
+    const transcript = data.text || '';
+    
+    return { success: true, transcript: transcript.trim() };
+  } catch (err) {
+    console.error('[Groq Whisper Error]', err.message);
+    return { success: false, error: err.message };
+  }
+});
 
 // ─── Sarvam AI TTS ──────────────────────────────────────────────────────────
 // Uses Sarvam AI Bulbul model (free credits on signup at sarvam.ai)
@@ -188,10 +235,10 @@ ipcMain.handle('tts:speak', async (_event, { text, lang, rate }) => {
 
 // Sarvam config
 ipcMain.handle('config:getSarvamKey', () => process.env.SARVAM_API_KEY || '');
-ipcMain.handle('config:setSarvamKey', (_event, key) => { process.env.SARVAM_API_KEY = key; return true; });
+ipcMain.handle('config:setSarvamKey', (_event, key) => { setConfig('SARVAM_API_KEY', key); return true; });
 
-// ─── AssemblyAI Universal Streaming STT ─────────────────────────────────────
-// Real-time streaming via WebSocket — Universal-3 model
+// ─── AssemblyAI Streaming STT ───────────────────────────────────────────────
+// Real-time streaming via WebSocket
 const WebSocket = require('ws');
 
 let assemblyWs = null;  // active WebSocket connection
@@ -207,17 +254,48 @@ ipcMain.handle('stt:startStream', async (_event, { sampleRate } = {}) => {
     return { success: true }; // already connected
   }
 
-  const rate = sampleRate || 44100;
+  const rate = sampleRate || 16000;
 
   try {
-    // Universal-3 Pro streaming endpoint — API key as query param token
-    const wsUrl = `wss://streaming.assemblyai.com/v3/ws?sample_rate=${rate}&encoding=pcm_s16le&token=${apiKey}`;
+    console.log('[AssemblyAI] Requesting temporary token...');
+    
+    // Step 1: Get temporary token from AssemblyAI
+    const tokenResponse = await fetch('https://api.assemblyai.com/v2/realtime/token', {
+      method: 'POST',
+      headers: {
+        'authorization': apiKey,
+        'content-type': 'application/json'
+      },
+      body: JSON.stringify({ expires_in: 3600 })
+    });
+
+    if (!tokenResponse.ok) {
+      const errorText = await tokenResponse.text();
+      console.error('[AssemblyAI] Token request failed:', tokenResponse.status, errorText);
+      return { 
+        success: false, 
+        error: `Failed to get AssemblyAI token: ${tokenResponse.status} - ${errorText}` 
+      };
+    }
+
+    const tokenData = await tokenResponse.json();
+    const token = tokenData.token;
+    
+    if (!token) {
+      console.error('[AssemblyAI] No token in response:', tokenData);
+      return { success: false, error: 'No token received from AssemblyAI' };
+    }
+
+    console.log('[AssemblyAI] Token received, connecting to WebSocket...');
+
+    // Step 2: Connect to WebSocket with token
+    const wsUrl = `wss://api.assemblyai.com/v2/realtime/ws?sample_rate=${rate}&token=${token}`;
 
     assemblyWs = new WebSocket(wsUrl);
     assemblyBusy = true;
 
     assemblyWs.on('open', () => {
-      console.log('[AssemblyAI] WebSocket connected');
+      console.log('[AssemblyAI] WebSocket connected successfully');
       if (mainWindow && !mainWindow.isDestroyed()) {
         mainWindow.webContents.send('stt:status', { type: 'connected' });
       }
@@ -226,11 +304,14 @@ ipcMain.handle('stt:startStream', async (_event, { sampleRate } = {}) => {
     assemblyWs.on('message', (raw) => {
       try {
         const msg = JSON.parse(raw.toString());
-        // msg.type: 'Final' | 'PartialTranscript' | 'SessionBegins' | 'SessionTerminated' etc.
+        console.log('[AssemblyAI] Message received:', msg.message_type || msg.type);
+        // msg.message_type: 'FinalTranscript' | 'PartialTranscript' | 'SessionBegins' | 'SessionTerminated'
         if (mainWindow && !mainWindow.isDestroyed()) {
           mainWindow.webContents.send('stt:transcript', msg);
         }
-      } catch (e) { /* non-JSON frame, ignore */ }
+      } catch (e) { 
+        console.warn('[AssemblyAI] parse error', e.message);
+      }
     });
 
     assemblyWs.on('error', (err) => {
@@ -251,6 +332,7 @@ ipcMain.handle('stt:startStream', async (_event, { sampleRate } = {}) => {
 
     return { success: true };
   } catch (err) {
+    console.error('[AssemblyAI] Connection error:', err);
     assemblyBusy = false;
     return { success: false, error: err.message };
   }
@@ -261,7 +343,9 @@ ipcMain.on('stt:audioChunk', (_event, pcmBase64) => {
   if (!assemblyWs || assemblyWs.readyState !== WebSocket.OPEN) return;
   try {
     const buf = Buffer.from(pcmBase64, 'base64');
-    assemblyWs.send(buf);
+    // AssemblyAI v2 expects base64-encoded JSON messages
+    const audioMessage = JSON.stringify({ audio_data: pcmBase64 });
+    assemblyWs.send(audioMessage);
   } catch (e) {
     console.warn('[AssemblyAI] send error', e.message);
   }
@@ -270,9 +354,9 @@ ipcMain.on('stt:audioChunk', (_event, pcmBase64) => {
 ipcMain.handle('stt:stopStream', async () => {
   if (assemblyWs) {
     try {
-      // AssemblyAI v3 termination message
+      // AssemblyAI v2 termination - just close the connection
       if (assemblyWs.readyState === WebSocket.OPEN) {
-        assemblyWs.send(JSON.stringify({ type: 'Terminate' }));
+        assemblyWs.send(JSON.stringify({ terminate_session: true }));
       }
       assemblyWs.close();
     } catch (e) { /* ignore */ }
@@ -285,7 +369,8 @@ ipcMain.handle('stt:stopStream', async () => {
 ipcMain.handle('stt:forceEndpoint', async () => {
   if (assemblyWs && assemblyWs.readyState === WebSocket.OPEN) {
     try {
-      assemblyWs.send(JSON.stringify({ type: 'ForceEndpoint' }));
+      // Force end of utterance for v2 API
+      assemblyWs.send(JSON.stringify({ force_end_utterance: true }));
     } catch (e) { /* ignore */ }
   }
   return { success: true };
@@ -294,7 +379,7 @@ ipcMain.handle('stt:forceEndpoint', async () => {
 
 // AssemblyAI config
 ipcMain.handle('config:getAssemblyKey', () => process.env.ASSEMBLYAI_API_KEY || '');
-ipcMain.handle('config:setAssemblyKey', (_event, key) => { process.env.ASSEMBLYAI_API_KEY = key; return true; });
+ipcMain.handle('config:setAssemblyKey', (_event, key) => { setConfig('ASSEMBLYAI_API_KEY', key); return true; });
 
 // ─── Gemini STT Fallback ─────────────────────────────────────────────────────
 // Used when AssemblyAI returns nothing — uploads full audio blob for transcription
@@ -390,7 +475,7 @@ ipcMain.handle('search:web', async (_event, { query, maxResults }) => {
 
 // Tavily config
 ipcMain.handle('config:getTavilyKey', () => process.env.TAVILY_API_KEY || '');
-ipcMain.handle('config:setTavilyKey', (_event, key) => { process.env.TAVILY_API_KEY = key; return true; });
+ipcMain.handle('config:setTavilyKey', (_event, key) => { setConfig('TAVILY_API_KEY', key); return true; });
 
 // Shell
 ipcMain.handle('shell:openExternal', (_event, url) => shell.openExternal(url));

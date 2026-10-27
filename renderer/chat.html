@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Ishaara Chat</title>
+  <title>ZenAI Chat</title>
   <style>
     :root {
       --bg: #ffffff;
@@ -261,7 +261,7 @@
         </svg>
       </div>
       <div>
-        <div class="chat-title">Ishaara Chat</div>
+        <div class="chat-title">ZenAI Chat</div>
         <div class="chat-subtitle">AI Assistant · Powered by Mistral & Tavily</div>
       </div>
     </header>
@@ -283,7 +283,7 @@
             <circle cx="22" cy="14" r="3.5" fill="#5fffc8"/>
           </svg>
         </div>
-        <div class="welcome-title">Welcome to Ishaara Chat</div>
+        <div class="welcome-title">Welcome to ZenAI Chat</div>
         <p class="welcome-desc">
           Ask me anything! I can search the web, answer questions, summarise articles,
           help with tasks, and much more. Powered by Mistral AI with Tavily web search.
@@ -344,7 +344,7 @@
         const id = ++_callId;
         _pendingCallbacks[id] = { resolve, reject };
         // Use console.log with a special prefix — the parent listens via console-message event
-        console.log('__ISHAARA_IPC__' + JSON.stringify({ id, method, args }));
+        console.log('__ZENAI_IPC__' + JSON.stringify({ id, method, args }));
         // Timeout after 30s
         setTimeout(() => {
           if (_pendingCallbacks[id]) {
@@ -359,7 +359,7 @@
     window.addEventListener('message', (e) => {
       try {
         const data = typeof e.data === 'string' ? JSON.parse(e.data) : e.data;
-        if (data && data.__ISHAARA_RESPONSE__ && _pendingCallbacks[data.id]) {
+        if (data && data.__ZENAI_RESPONSE__ && _pendingCallbacks[data.id]) {
           const cb = _pendingCallbacks[data.id];
           delete _pendingCallbacks[data.id];
           if (data.error) cb.reject(new Error(data.error));
@@ -414,7 +414,7 @@
 
               const res = await callParentAPI('queryMistral', {
                 command: aiPrompt,
-                pageContext: { title: 'Ishaara Chat', url: '/chat', bodyText: '' },
+                pageContext: { title: 'ZenAI Chat', url: '/chat', bodyText: '' },
                 history: chatHistory.slice(-16),
               });
 
@@ -424,6 +424,8 @@
                 const reply = res.data.speech || res.data.explanation || JSON.stringify(res.data);
                 addMessage('bot', reply);
                 chatHistory.push({ role: 'assistant', content: reply });
+              } else {
+                addMessage('system', `⚠ ${res?.error || 'AI response failed. Check Settings and try again.'}`);
               }
               return;
             }
@@ -435,7 +437,7 @@
         // Direct AI query
         const res = await callParentAPI('queryMistral', {
           command: text,
-          pageContext: { title: 'Ishaara Chat', url: '/chat', bodyText: '', interactive: [], headings: [] },
+          pageContext: { title: 'ZenAI Chat', url: '/chat', bodyText: '', interactive: [], headings: [] },
           history: chatHistory.slice(-16),
         });
 

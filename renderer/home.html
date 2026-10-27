@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Ishaara</title>
+  <title>ZenAI</title>
   <style>
     :root {
       --bg:          #ffffff;
@@ -289,7 +289,7 @@
   <main class="page" role="main">
 
     <!-- Brand -->
-    <header class="brand" aria-label="Ishaara">
+    <header class="brand" aria-label="ZenAI">
       <div class="brand-logo">
         <svg viewBox="0 0 64 64" width="52" height="52">
           <rect width="64" height="64" rx="14" fill="#1a3a2e"/>
@@ -303,8 +303,8 @@
         </svg>
       </div>
 
-      <div class="brand-reel" aria-label="Ishaara" style="min-width:220px">
-        <span id="brand-word" class="brand-word slot-word">Ishaara</span>
+      <div class="brand-reel" aria-label="ZenAI" style="min-width:220px">
+        <span id="brand-word" class="brand-word slot-word">ZenAI</span>
       </div>
 
       <p class="brand-tagline">Accessible browsing for everyone.</p>
@@ -341,7 +341,7 @@
 
     </section>
 
-    <footer>Ishaara · Accessible Browser · AfterMath ALOOgorithm Humanity</footer>
+    <footer>ZenAI · Accessible Browser · AfterMath ALOOgorithm Humanity</footer>
   </main>
 
   <!-- Add Shortcut Modal -->
@@ -371,10 +371,10 @@
   <script>
     // ── Slot machine animation ──────────────────────────────────────────────
     const BRAND_WORDS = [
-      { text: 'Ishaara',   family: '-apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif' },
-      { text: 'इशारा',     family: '"Noto Sans Devanagari", sans-serif' },
-      { text: 'ઇશારા',     family: '"Noto Sans Gujarati", sans-serif' },
-      { text: '⠊⠎⠓⠁⠁⠗⠁', family: '"Courier New", monospace' },
+      { text: 'ZenAI',   family: '-apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif' },
+      { text: 'ज़ेनएआई',     family: '"Noto Sans Devanagari", sans-serif' },
+      { text: 'ઝેનએઆઈ',     family: '"Noto Sans Gujarati", sans-serif' },
+      { text: '⠵⠑⠝⠁⠊', family: '"Courier New", monospace' },
     ];
     let wordIdx = 0;
     const wordEl = document.getElementById('brand-word');
@@ -399,7 +399,7 @@
       const q = document.getElementById('search-q').value.trim();
       if (!q) return;
       const isUrl = /^(https?:\/\/|www\.)/i.test(q);
-      window.location.href = isUrl ? q : 'https://www.google.com/search?q=' + encodeURIComponent(q);
+      window.location.href = isUrl ? (/^www\./i.test(q) ? 'https://' + q : q) : 'https://www.google.com/search?q=' + encodeURIComponent(q);
     });
 
     // ── Shortcut cards ──────────────────────────────────────────────────────
@@ -416,7 +416,11 @@
     });
 
     // ── Custom shortcuts ─────────────────────────────────────────────────────
-    const customShortcuts = JSON.parse(localStorage.getItem('ishaara_shortcuts') || '[]');
+    let customShortcuts = [];
+    try {
+      const saved = JSON.parse(localStorage.getItem('zenai_shortcuts') || '[]');
+      if (Array.isArray(saved)) customShortcuts = saved.filter(s => s && typeof s.label === 'string' && typeof s.url === 'string');
+    } catch (_) { /* Ignore invalid stored shortcuts so the home controls still work. */ }
     const grid = document.getElementById('shortcuts-grid');
     const addBtn = document.getElementById('btn-add-shortcut');
 
@@ -451,7 +455,7 @@
       const url  = document.getElementById('modal-url').value.trim();
       if (!name || !url) return;
       customShortcuts.push({ label: name, url });
-      localStorage.setItem('ishaara_shortcuts', JSON.stringify(customShortcuts));
+      localStorage.setItem('zenai_shortcuts', JSON.stringify(customShortcuts));
       renderCustomShortcuts();
       document.getElementById('modal-name').value = '';
       document.getElementById('modal-url').value  = '';

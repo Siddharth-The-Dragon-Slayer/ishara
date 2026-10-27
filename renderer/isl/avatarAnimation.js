@@ -1,6 +1,6 @@
 'use strict';
 /* ============================================================================
-   Avatar Animation — Three.js ISL signing avatar for Ishaara.
+   Avatar Animation — Three.js ISL signing avatar for ZenAI.
    Ported from AfterMath's useAvatarAnimation.ts (React hook → plain JS class).
    ============================================================================ */
 

@@ -1,6 +1,6 @@
 'use strict';
 /* ============================================================================
-   Ishaara Browser — Renderer (app.js)
+   ZenAI Browser — Renderer (app.js)
    Tabs · DOM extraction · Actions · Voice (WebkitSpeech) · Edge-TTS · A11y
    ============================================================================ */
 
@@ -110,6 +110,8 @@ const state = {
   ttsRate: 1.0,
   muted: false,
   abortProcessing: false,
+  processing: false,
+  commandId: 0,
   a11y: {
     highContrast: false, zoom: 1.0, highlightLinks: false, simplify: false,
     dyslexia: false, spacing: false, largeCursor: false, focusRing: true,
@@ -128,10 +130,9 @@ let tabSwitchPending = false;
 
 function createTab(url = null) {
   const id = ++tabIdCounter;
-  tabs.set(id, { url: '', title: 'New Tab', loading: false, chatHist: [], chatHTML: null });
+  tabs.set(id, { url: url || location.href.replace('index.html', 'home.html'), title: 'New Tab', loading: false, chatHist: [], chatHTML: null });
   renderTabs();
   switchTab(id);
-  navTo(url || null, url ? null : 'home');
   return id;
 }
 
@@ -140,6 +141,9 @@ function closeTab(id) {
     // Replace with fresh home tab instead of closing the only one
     const tab = tabs.get(id);
     if (tab) { tab.url = ''; tab.title = 'New Tab'; tab.loading = false; tab.chatHist = []; tab.chatHTML = null; }
+    cancelCommand();
+    state.chatHist = [];
+    resetChatDOM();
     renderTabs();
     navTo(null, 'home');
     return;
@@ -149,16 +153,16 @@ function closeTab(id) {
   tabs.delete(id);
   if (activeTabId === id) {
     const newActive = keys[idx + 1] || keys[idx - 1];
-    activeTabId = newActive;
-    const tab = tabs.get(newActive);
-    if (tab && tab.url) { wv.src = tab.url; updateAddressBar(tab.url); }
-    else navTo(null, 'home');
+    switchTab(newActive);
   }
   renderTabs();
 }
 
 function switchTab(id) {
   if (id === activeTabId) return;
+  cancelCommand();
+  stopSpeak();
+  state.pageCtx = null;
 
   // Save current chat state to the outgoing tab
   if (activeTabId !== null) {
@@ -272,7 +276,8 @@ async function init() {
   initVoice();
   initReadingGuide();
   initWebview();
-  await applyA11y('focus_ring', true);
+  // Apply on did-stop-loading, once the guest webContents is ready.
+  state.a11y.activeCSS.add('__aai_focus_ring__');
 
   if (window.ZenModeController) {
     window.ZenModeController.init();
@@ -291,14 +296,18 @@ function navTo(raw, preset) {
     const homePath = location.href.replace('index.html', 'home.html');
     wv.src = homePath;
     addressBar.value = '/home';
-    updateTabInfo(activeTabId, { url: homePath, title: 'Ishaara' });
+    state.url = homePath;
+    state.pageCtx = null;
+    updateTabInfo(activeTabId, { url: homePath, title: 'ZenAI' });
     return;
   }
   if (preset === 'chat') {
     const chatPath = location.href.replace('index.html', 'chat.html');
     wv.src = chatPath;
     addressBar.value = '/chat';
-    updateTabInfo(activeTabId, { url: chatPath, title: 'Ishaara Chat' });
+    state.url = chatPath;
+    state.pageCtx = null;
+    updateTabInfo(activeTabId, { url: chatPath, title: 'ZenAI Chat' });
     return;
   }
   let url = (raw || '').trim();
@@ -336,7 +345,7 @@ function resetChatDOM() {
         </div>
         <div class="msg-body" style="max-width:100%">
           <div class="wc-wrap">
-            <strong>Hi, I'm Ishaara.</strong>
+            <strong>Hi, I'm ZenAI.</strong>
             <p>I understand every page you visit and can take action — browse, search, fill forms, read aloud, or adapt it for your needs. I follow through until the task is done.</p>
             <div class="wc-hint">
               Try: <em>"Search for news on YouTube"</em> · <em>"Read the article"</em> ·
@@ -395,7 +404,7 @@ function initWebview() {
     updateTabInfo(activeTabId, { url: e.url });
   });
   wv.addEventListener('page-title-updated', e => {
-    document.title = `${e.title} — Ishaara`;
+    document.title = `${e.title} — ZenAI`;
     updateTabInfo(activeTabId, { title: e.title });
   });
   wv.addEventListener('page-favicon-updated', e => {
@@ -419,12 +428,12 @@ function initWebview() {
   });
 
   // ── IPC Relay for chat.html (webview guest pages) ───────────────────
-  // chat.html uses console.log('__ISHAARA_IPC__' + JSON.stringify(...)) to relay API calls
+  // chat.html uses console.log('__ZENAI_IPC__' + JSON.stringify(...)) to relay API calls
   wv.addEventListener('console-message', async (e) => {
     const msg = e.message || '';
-    if (!msg.startsWith('__ISHAARA_IPC__')) return;
+    if (!msg.startsWith('__ZENAI_IPC__')) return;
     try {
-      const { id, method, args } = JSON.parse(msg.slice('__ISHAARA_IPC__'.length));
+      const { id, method, args } = JSON.parse(msg.slice('__ZENAI_IPC__'.length));
       let result = null;
       if (method === 'queryMistral') {
         result = await window.electronAPI.queryMistral(args);
@@ -434,12 +443,12 @@ function initWebview() {
         result = await window.electronAPI.speakSarvam(args);
       }
       // Send result back to the guest page via postMessage
-      const response = JSON.stringify({ __ISHAARA_RESPONSE__: true, id, result });
+      const response = JSON.stringify({ __ZENAI_RESPONSE__: true, id, result });
       wv.executeJavaScript(`window.postMessage(${JSON.stringify(response)}, '*')`);
     } catch (err) {
       try {
-        const { id } = JSON.parse(msg.slice('__ISHAARA_IPC__'.length));
-        const response = JSON.stringify({ __ISHAARA_RESPONSE__: true, id, error: err.message });
+        const { id } = JSON.parse(msg.slice('__ZENAI_IPC__'.length));
+        const response = JSON.stringify({ __ZENAI_RESPONSE__: true, id, error: err.message });
         wv.executeJavaScript(`window.postMessage(${JSON.stringify(response)}, '*')`);
       } catch (_) { }
     }
@@ -481,6 +490,38 @@ function setAgentStatus(text, isError = false, isSuccess = false, hide = false) 
 // ═════════════════════════════════════════════════════════════════════════════
 
 async function processCmd(cmd) {
+  cmd = String(cmd || '').trim();
+  if (!cmd || state.processing) return;
+  const commandId = ++state.commandId;
+  state.processing = true;
+  $('send-btn').disabled = true;
+  try {
+    await executeCmd(cmd, commandId);
+  } catch (error) {
+    if (commandId === state.commandId) {
+      setAgentStatus('Error', true);
+      addMsg('system', `⚠ ${error.message || 'Command failed. Please try again.'}`);
+    }
+  } finally {
+    if (commandId === state.commandId) {
+      state.processing = false;
+      $('send-btn').disabled = false;
+      $('stop-action-btn').style.display = 'none';
+      showThinking(false);
+    }
+  }
+}
+
+function cancelCommand() {
+  state.commandId++;
+  state.abortProcessing = true;
+  state.processing = false;
+  $('send-btn').disabled = false;
+  $('stop-action-btn').style.display = 'none';
+  showThinking(false);
+}
+
+async function executeCmd(cmd, commandId) {
   cmd = cmd.trim();
   if (!cmd) return;
 
@@ -499,11 +540,10 @@ async function processCmd(cmd) {
   const stopBtn = $('stop-action-btn');
   if (stopBtn) {
     stopBtn.style.display = 'flex';
-    stopBtn.onclick = () => { state.abortProcessing = true; };
   }
 
   while (!taskComplete && iter < MAX_ITER) {
-    if (state.abortProcessing) {
+    if (state.abortProcessing || commandId !== state.commandId) {
       showThinking(false);
       setAgentStatus('Stopped', false, false);
       addMsg('system', 'Processing stopped.');
@@ -517,6 +557,7 @@ async function processCmd(cmd) {
 
     // Always read fresh DOM on each iteration
     const pageCtx = await getPageContext(true);
+    if (commandId !== state.commandId) return;
 
     // On follow-up iterations, describe the DOM change to the AI
     let query = cmd;
@@ -533,6 +574,7 @@ async function processCmd(cmd) {
       pageContext: pageCtx,
       history: state.chatHist.slice(-20),
     });
+    if (commandId !== state.commandId) return;
 
     showThinking(false);
 
@@ -563,10 +605,12 @@ async function processCmd(cmd) {
     let didSearch = false;
 
     for (const action of actions) {
+      if (commandId !== state.commandId) return;
       if (action.type === 'search_web') {
         try {
           setAgentStatus(`Searching: "${action.query}"…`);
           const sr = await window.electronAPI.searchWeb({ query: action.query, maxResults: 5 });
+          if (commandId !== state.commandId) return;
           if (sr.success && sr.results && sr.results.length > 0) {
             didSearch = true;
             // Render source cards in chat
@@ -584,6 +628,8 @@ async function processCmd(cmd) {
                 sr.results.slice(0, 4).map(r => ({ title: r.title, snippet: (r.snippet || '').slice(0, 200), url: r.url }))
               )}`,
             });
+          } else {
+            addMsg('system', `Search failed: ${sr.error || 'No results found.'}`);
           }
         } catch (e) { console.warn('[search_web]', e); }
       } else {
@@ -597,11 +643,12 @@ async function processCmd(cmd) {
 
     // Execute DOM-touching actions with status updates
     for (const action of regularActions) {
+      if (commandId !== state.commandId) return;
       try {
         setAgentStatus(`${actionLabel(action)}…`);
         await runAction(action);
         await sleep(400);
-      } catch (e) { console.error('[action]', e); }
+      } catch (e) { throw new Error(`${actionLabel(action)} failed: ${e.message}`); }
     }
 
     // Decide if we need another iteration
@@ -629,6 +676,7 @@ async function processCmd(cmd) {
     }
   }
 
+  if (commandId !== state.commandId) return;
   if (stopBtn) stopBtn.style.display = 'none';
 
   if (!taskComplete && iter >= MAX_ITER) {
@@ -681,8 +729,8 @@ async function runAction(a) {
           var match = opts.find(o => o.text.toLowerCase().includes(val) || o.value.toLowerCase().includes(val));
           if(match) el.value = match.value;
         } else {
-          var nSet=Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype,'value');
-          if(!nSet) nSet=Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype,'value');
+          var proto=el.tagName.toLowerCase()==='textarea'?window.HTMLTextAreaElement.prototype:window.HTMLInputElement.prototype;
+          var nSet=Object.getOwnPropertyDescriptor(proto,'value');
           if(nSet&&nSet.set) nSet.set.call(el,${JSON.stringify(a.value||'')});
           else el.value=${JSON.stringify(a.value||'')};
         }
@@ -705,8 +753,8 @@ async function runAction(a) {
           var match = opts.find(o => o.text.toLowerCase().includes(val) || o.value.toLowerCase().includes(val));
           if(match) el.value = match.value;
         } else {
-          var nSet=Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype,'value');
-          if(!nSet) nSet=Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype,'value');
+          var proto=el.tagName.toLowerCase()==='textarea'?window.HTMLTextAreaElement.prototype:window.HTMLInputElement.prototype;
+          var nSet=Object.getOwnPropertyDescriptor(proto,'value');
           if(nSet&&nSet.set) nSet.set.call(el,${JSON.stringify(a.value||'')});
           else el.value=${JSON.stringify(a.value||'')};
         }
@@ -740,7 +788,7 @@ async function runAction(a) {
     case 'submit':
       await wv.executeJavaScript(`(function(){
         var f=document.querySelector(${JSON.stringify(a.selector)});
-        if(f){f.submit();return true;}
+        if(f&&f.tagName==='FORM'){f.requestSubmit();return true;}
         var b=document.querySelector('button[type="submit"],input[type="submit"]');
         if(b){b.click();return true;}return false;
       })()`);
@@ -905,97 +953,109 @@ function showCaptions(text) {
 }
 
 // ═════════════════════════════════════════════════════════════════════════════
-// VOICE INPUT  —  AssemblyAI Universal Streaming STT
-//   Renderer: AudioContext + ScriptProcessorNode → raw 16kHz PCM Int16 → base64
-//   Main:     WebSocket to assemblyai.com streaming endpoint
-//   Results:  push-events back to renderer → partial shown in input, final sent
+// VOICE INPUT  —  Web Speech API (Built-in) with Groq Whisper Fallback
+//   Primary: Browser's native SpeechRecognition (free, fast, offline-capable)
+//   Fallback: Groq Whisper API (if browser API fails or unavailable)
 // ═════════════════════════════════════════════════════════════════════════════
 
 let recogActive = false;
 let _voiceStopTimer = null;
-let _silenceTimer = null;
-let _audioCtx = null;
-let _scriptNode = null;
-let _micSourceNode = null;
-let _micStream = null;
-let _finalTranscript = '';
-let _partialTranscript = '';
-// Gemini fallback recording (parallel)
+let _recognition = null;
 let _mediaRecorder = null;
 let _audioChunks = [];
 let _fallbackMime = 'audio/webm';
-
-const SILENCE_THRESHOLD = 0.01; // RMS amplitude below this is silence
-const SILENCE_MS_UNTIL_SEND = 2000;
-
+let _finalTranscript = '';
+let _interimTranscript = '';
 
 function initVoice() {
-  console.log('[AssemblySTT] Voice input ready (AssemblyAI Universal Streaming).');
+  // Check if Web Speech API is available
+  const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+  
+  if (SpeechRecognition) {
+    console.log('[Voice] Using Web Speech API (built-in, free)');
+    _recognition = new SpeechRecognition();
+    _recognition.continuous = true;
+    _recognition.interimResults = true;
+    _recognition.lang = 'en-IN'; // Default to Indian English
+    _recognition.maxAlternatives = 1;
 
-  // Listen for transcript events pushed by main process
-  window.electronAPI.onSttTranscript((msg) => {
-    if (!recogActive) return;
+    _recognition.onstart = () => {
+      console.log('[Voice] Speech recognition started');
+      setVoiceStatus('🎤 Listening...');
+    };
 
-    // AssemblyAI v3 message types:
-    //   { type: 'Begin', id, expires_at }          — session opened
-    //   { type: 'Turn', transcript, end_of_turn }   — partial (false) or final (true)
-    //   { type: 'Termination', ... }                — session ended
-    const text = msg.transcript || '';
-
-    if (msg.type === 'Turn') {
-      if (msg.end_of_turn) {
-        // Final segment — process it immediately and stay in conversational mode
-        if (text) _finalTranscript += (_finalTranscript ? ' ' : '') + text;
-        const finalStr = _finalTranscript.trim();
-
-        // Reset transcripts for the next turn
-        _finalTranscript = '';
-        _partialTranscript = '';
-        const inp = $('cmd-input');
-        if (inp) { inp.value = ''; autoResize(); }
-
-        // Briefly reset the fallback recorder for the next turn
-        if (_mediaRecorder && _mediaRecorder.state !== 'inactive') {
-          _mediaRecorder.onstop = () => { _audioChunks = []; };
-          _mediaRecorder.stop();
-          setTimeout(() => { if (recogActive) { try { _mediaRecorder.start(200); } catch (e) { } } }, 50);
+    _recognition.onresult = (event) => {
+      _interimTranscript = '';
+      
+      for (let i = event.resultIndex; i < event.results.length; i++) {
+        const transcript = event.results[i][0].transcript;
+        if (event.results[i].isFinal) {
+          _finalTranscript += transcript + ' ';
+        } else {
+          _interimTranscript += transcript;
         }
-
-        if (finalStr) {
-          console.log('[AssemblySTT] Turn ended, running command:', finalStr);
-          processCmd(finalStr);
-        }
-      } else {
-        // Partial / in-progress
-        _partialTranscript = text;
-        const inp = $('cmd-input');
-        if (inp && text) { inp.value = _finalTranscript + (text ? ' ' + text : ''); autoResize(); }
       }
-    } else if (msg.type === 'Begin') {
-      console.log('[AssemblySTT] Session started, id:', msg.id);
-    }
-  });
 
-  // Listen for status events from main process
-  window.electronAPI.onSttStatus((msg) => {
-    if (msg.type === 'connected') {
-      setVoiceStatus(''); // <!-- Connected... -->
-    } else if (msg.type === 'error') {
-      setVoiceStatus('⚠️ STT error: ' + (msg.message || 'unknown'), true);
-      _cleanupAudio();
+      // Update input field with current transcript
+      const inp = $('cmd-input');
+      if (inp) {
+        inp.value = (_finalTranscript + _interimTranscript).trim();
+        autoResize();
+      }
+
+      // Auto-send after 2 seconds of silence (detected by no new results)
+      clearTimeout(_voiceStopTimer);
+      if (_finalTranscript.trim()) {
+        _voiceStopTimer = setTimeout(() => {
+          if (recogActive && _finalTranscript.trim()) {
+            stopListen();
+          }
+        }, 2000);
+      }
+    };
+
+    _recognition.onerror = (event) => {
+      console.warn('[Voice] Speech recognition error:', event.error);
+      clearTimeout(_voiceStopTimer);
       setVoiceUI(false);
-      setTimeout(() => setVoiceStatus(''), 5000);
-    } else if (msg.type === 'closed') {
-      if (recogActive) {
-        // Disconnected unexpectedly while still supposed to be listening.
-        console.warn('[AssemblySTT] WebSocket closed unexpectedly, attempting reconnect...');
-        setVoiceStatus('⏳ Reconnecting AI...');
-        recogActive = false; // reset so startListen doesn't toggle off
-        _cleanupAudio();
-        setTimeout(() => { startListen(); }, 1000);
+      // Electron may expose SpeechRecognition without a working speech service.
+      // Stop its restart loop and use the recorder on the next attempt.
+      if (['network', 'service-not-allowed', 'language-not-supported'].includes(event.error)) {
+        _recognition.onend = null;
+        try { _recognition.abort(); } catch (_) { }
+        _recognition = null;
+        startGroqFallback().catch(error => {
+          setVoiceUI(false);
+          setVoiceStatus(error.message, true);
+        });
+        return;
       }
-    }
-  });
+      
+      if (event.error === 'no-speech') {
+        setVoiceStatus('⚠️ No speech detected', true);
+      } else if (event.error === 'not-allowed') {
+        setVoiceStatus('⚠️ Microphone access denied', true);
+      } else {
+        setVoiceStatus(`⚠️ Error: ${event.error}`, true);
+      }
+      
+      setTimeout(() => setVoiceStatus(''), 3000);
+    };
+
+    _recognition.onend = () => {
+      console.log('[Voice] Speech recognition ended');
+      if (recogActive) {
+        // Restart if still supposed to be listening
+        try {
+          _recognition.start();
+        } catch (e) {
+          console.warn('[Voice] Could not restart:', e);
+        }
+      }
+    };
+  } else {
+    console.log('[Voice] Web Speech API not available, will use Groq Whisper fallback only');
+  }
 }
 
 function setVoiceUI(on) {
@@ -1013,207 +1073,143 @@ function setVoiceUI(on) {
 function setVoiceStatus(txt, isError = false) {
   const el = $('voice-status');
   if (!el) return;
-  el.innerHTML = txt;
+  el.textContent = txt;
   el.classList.toggle('error', isError);
 }
 
 async function startListen() {
-  if (recogActive) { await stopListen(); return; }
+  if (recogActive) { 
+    await stopListen(); 
+    return; 
+  }
 
   _finalTranscript = '';
-  _partialTranscript = '';
-
-  // Show connecting status immediately
-  setVoiceStatus(''); // <!-- Connecting... -->
+  _interimTranscript = '';
+  _audioChunks = [];
 
   try {
-    // 1. Get mic stream
-    _micStream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
-
-    // 2. Create AudioContext — let Chromium use the hardware's native rate
-    _audioCtx = new AudioContext();
-    const actualRate = _audioCtx.sampleRate; // e.g. 44100 or 48000
-    console.log('[AssemblySTT] AudioContext sample rate:', actualRate);
-
-    // 3. Set up ScriptProcessorNode for raw PCM capture
-    _micSourceNode = _audioCtx.createMediaStreamSource(_micStream);
-
-    const BUFFER_SIZE = 4096;
-    _scriptNode = _audioCtx.createScriptProcessor(BUFFER_SIZE, 1, 1);
-
-    // 4. Open AssemblyAI WebSocket AFTER Audio graph is ready so audio flows immediately
-    const res = await window.electronAPI.startSttStream({ sampleRate: actualRate });
-    if (!res.success) throw new Error(res.error || 'Could not start AssemblyAI stream.');
-
-    let isSilent = true;
-    let _noiseFloor = 0.005; // initial assumption
-    const alpha = 0.05; // smoothing factor for noise estimation
-
-    _scriptNode.onaudioprocess = (e) => {
-      if (!recogActive) return;
-
-      const float32 = e.inputBuffer.getChannelData(0);
-      const int16 = new Int16Array(float32.length);
-
-      // Pause listening while the chatbot is speaking to prevent self-transcription (echo loop)
-      if (state.speaking) {
-        if (!isSilent) {
-          isSilent = true;
-          clearTimeout(_silenceTimer);
-        }
-        // Send zero-filled "empty" audio so AssemblyAI doesn't time out the connection
-        const emptyB64 = _int16ToBase64(int16); // int16 is correctly zeroed out initially
-        window.electronAPI.sendAudioChunk(emptyB64);
-        return;
-      }
-
-      // Convert Float32 [-1,1] → Int16 PCM little-endian
-      // AND calculate RMS (Root Mean Square) for silence detection
-      let sumSquares = 0;
-
-      for (let i = 0; i < float32.length; i++) {
-        const s = Math.max(-1, Math.min(1, float32[i]));
-        int16[i] = s < 0 ? s * 0x8000 : s * 0x7FFF;
-        sumSquares += float32[i] * float32[i];
-      }
-
-      const rms = Math.sqrt(sumSquares / float32.length);
-
-      // Adaptive Noise Floor Estimation (only update when reasonably quiet)
-      if (rms < 0.05) {
-        _noiseFloor = _noiseFloor * (1 - alpha) + rms * alpha;
-      }
-      // Ensure the threshold doesn't get ridiculously low or high
-      const SILENCE_THRESH = Math.max(0.002, Math.min(0.03, _noiseFloor * 3));
-
-      // Silence detection logic
-      if (rms > SILENCE_THRESH) {
-        if (isSilent) {
-          isSilent = false;
-          clearTimeout(_silenceTimer); // user is speaking, cancel send-timer
-          setVoiceStatus(''); // <!-- Recording... -->
-        }
-      } else {
-        if (!isSilent) {
-          isSilent = true;
-          setVoiceStatus(''); // <!-- Listening... -->
-          // Started being silent — arm the 2s auto-send timer
-          _silenceTimer = setTimeout(() => {
-            if (recogActive) {
-              console.log('[AssemblySTT] 2s silence reached → forcing endpoint for conversational turn');
-              setVoiceStatus(''); // <!-- Processing... -->
-              // This triggers AssemblyAI to send Turn(end_of_turn:true) which processes the command
-              window.electronAPI.forceEndpoint();
-            }
-          }, SILENCE_MS_UNTIL_SEND);
-        }
-      }
-
-      const b64 = _int16ToBase64(int16);
-      window.electronAPI.sendAudioChunk(b64);
-    };
-
-    _micSourceNode.connect(_scriptNode);
-    _scriptNode.connect(_audioCtx.destination);
-
-    // 5. Also start a parallel MediaRecorder for Gemini fallback
-    _audioChunks = [];
-    const mimes = ['audio/webm;codecs=opus', 'audio/webm', 'audio/ogg;codecs=opus', 'audio/ogg'];
-    _fallbackMime = mimes.find(m => MediaRecorder.isTypeSupported(m)) || 'audio/webm';
-    _mediaRecorder = new MediaRecorder(_micStream, { mimeType: _fallbackMime });
-    _mediaRecorder.ondataavailable = e => { if (e.data && e.data.size > 0) _audioChunks.push(e.data); };
-    _mediaRecorder.start(200);
-
-    setVoiceUI(true);
-    setVoiceStatus(''); // <!-- Always-On -->
-
+    // Start Web Speech API if available
+    if (_recognition) {
+      _recognition.start();
+      setVoiceUI(true);
+    } else {
+      // Fallback to recording for Groq Whisper
+      await startGroqFallback();
+    }
   } catch (err) {
-    _cleanupAudio();
     setVoiceUI(false);
+    console.error('[Voice] Start error:', err);
     const msg = err.name === 'NotAllowedError'
       ? 'Microphone access denied. Allow mic permission.'
       : err.message;
     setVoiceStatus(msg, true);
     setTimeout(() => setVoiceStatus(''), 5000);
-    console.error('[AssemblySTT] startListen error:', err);
   }
+}
+
+async function startGroqFallback() {
+  console.log('[Voice] Starting Groq Whisper fallback');
+  setVoiceStatus('🎤 Recording (Groq Whisper)...');
+  
+  const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+  
+  // Determine best audio format
+  const mimeTypes = [
+    'audio/webm;codecs=opus',
+    'audio/webm',
+    'audio/ogg;codecs=opus',
+    'audio/mp4'
+  ];
+  
+  _fallbackMime = mimeTypes.find(type => MediaRecorder.isTypeSupported(type)) || 'audio/webm';
+  
+  _mediaRecorder = new MediaRecorder(stream, { mimeType: _fallbackMime });
+  _audioChunks = [];
+  
+  _mediaRecorder.ondataavailable = (e) => {
+    if (e.data.size > 0) _audioChunks.push(e.data);
+  };
+  
+  _mediaRecorder.onstop = async () => {
+    stream.getTracks().forEach(track => track.stop());
+    await processGroqTranscription();
+  };
+  
+  _mediaRecorder.start(200);
+  setVoiceUI(true);
+}
+
+async function processGroqTranscription() {
+  if (_audioChunks.length === 0) {
+    setVoiceStatus('⚠️ No audio recorded', true);
+    setTimeout(() => setVoiceStatus(''), 3000);
+    return;
+  }
+
+  setVoiceStatus('⚡ Transcribing with Groq Whisper...');
+  
+  try {
+    const blob = new Blob(_audioChunks, { type: _fallbackMime });
+    const base64 = await _blobToBase64(blob);
+    
+    // Use Groq Whisper API
+    const res = await window.electronAPI.groqWhisper({ 
+      audioBase64: base64, 
+      mimeType: _fallbackMime.split(';')[0] 
+    });
+    
+    if (res && res.success && res.transcript) {
+      const transcript = res.transcript.trim();
+      const inp = $('cmd-input');
+      if (inp) { 
+        inp.value = transcript; 
+        autoResize(); 
+      }
+      
+      if (transcript) {
+        processCmd(transcript);
+      } else {
+        setVoiceStatus('⚠️ No speech detected', true);
+        setTimeout(() => setVoiceStatus(''), 3000);
+      }
+    } else {
+      throw new Error(res?.error || 'Transcription failed');
+    }
+  } catch (err) {
+    console.error('[Voice] Groq transcription error:', err);
+    setVoiceStatus('⚠️ Transcription failed: ' + err.message, true);
+    setTimeout(() => setVoiceStatus(''), 5000);
+  }
+  
 }
 
 async function stopListen() {
   clearTimeout(_voiceStopTimer);
-  clearTimeout(_silenceTimer);
   setVoiceUI(false);
 
-  // Stop parallel MediaRecorder and collect chunks
-  const fallbackChunks = await new Promise(resolve => {
-    if (_mediaRecorder && _mediaRecorder.state !== 'inactive') {
-      _mediaRecorder.onstop = () => resolve([..._audioChunks]);
-      _mediaRecorder.stop();
-    } else {
-      resolve([..._audioChunks]);
-    }
-  });
-  _mediaRecorder = null;
-  _audioChunks = [];
-
-  _cleanupAudio();
-  setVoiceStatus('🔄 Finalising transcript…');
-
-  try {
-    await window.electronAPI.stopSttStream();
-  } catch (e) { /* ignore */ }
-
-  // Give AssemblyAI a moment to push the final transcript event
-  await new Promise(r => setTimeout(r, 700));
-
-  let final = _finalTranscript.trim();
-  _finalTranscript = '';
-  _partialTranscript = '';
-
-  // ── Gemini fallback if AssemblyAI returned nothing ────────────────────
-  if (!final && fallbackChunks.length > 0) {
-    setVoiceStatus('⚡ AssemblyAI got nothing — trying Gemini…');
+  if (_recognition) {
+    // Stop Web Speech API
     try {
-      const blob = new Blob(fallbackChunks, { type: _fallbackMime });
-      const base64 = await _blobToBase64(blob);
-      const mimeType = _fallbackMime.split(';')[0];
-      const res = await window.electronAPI.transcribeSpeech({ audioBase64: base64, mimeType });
-      if (res && res.success && res.transcript) {
-        final = res.transcript.trim();
-        console.log('[GeminiFallback] Got transcript:', final);
-      } else {
-        console.warn('[GeminiFallback] Failed:', res?.error);
-      }
+      _recognition.stop();
     } catch (e) {
-      console.warn('[GeminiFallback] Error:', e.message);
+      console.warn('[Voice] Stop error:', e);
     }
+
+    const finalText = _finalTranscript.trim();
+    _finalTranscript = '';
+    _interimTranscript = '';
+
+    if (finalText) {
+      setVoiceStatus('');
+      processCmd(finalText);
+    } else {
+      setVoiceStatus('⚠️ No speech detected', true);
+      setTimeout(() => setVoiceStatus(''), 3000);
+    }
+  } else if (_mediaRecorder && _mediaRecorder.state !== 'inactive') {
+    // Stop Groq fallback recording
+    _mediaRecorder.stop();
   }
-
-  setVoiceStatus('');
-  const inp = $('cmd-input');
-  if (inp) { inp.value = final; autoResize(); }
-
-  if (final) {
-    processCmd(final);
-  } else {
-    setVoiceStatus('⚠️ No speech detected — try again.', true);
-    setTimeout(() => setVoiceStatus(''), 3000);
-  }
-}
-
-function _cleanupAudio() {
-  try { if (_scriptNode) { _scriptNode.disconnect(); _scriptNode = null; } } catch (_) { }
-  try { if (_micSourceNode) { _micSourceNode.disconnect(); _micSourceNode = null; } } catch (_) { }
-  try { if (_audioCtx && _audioCtx.state !== 'closed') { _audioCtx.close(); _audioCtx = null; } } catch (_) { }
-  try { if (_micStream) { _micStream.getTracks().forEach(t => t.stop()); _micStream = null; } } catch (_) { }
-}
-
-/** Convert Int16Array to base64 string (for AssemblyAI PCM streaming) */
-function _int16ToBase64(int16) {
-  const bytes = new Uint8Array(int16.buffer);
-  let bin = '';
-  for (let i = 0; i < bytes.byteLength; i++) bin += String.fromCharCode(bytes[i]);
-  return btoa(bin);
 }
 
 /** Convert a Blob to base64 data string (for Gemini fallback) */
@@ -1542,7 +1538,7 @@ $('btn-close-panel').addEventListener('click', () => {
 });
 $('btn-new-chat').addEventListener('click', () => {
   stopSpeak();
-  state.abortProcessing = true;
+  cancelCommand();
   state.chatHist = [];
   resetChatDOM();
   if (activeTabId !== null) {
@@ -1728,7 +1724,8 @@ $('cmd-input').addEventListener('input', autoResize);
 
 // Stop button — abort current processing
 $('stop-action-btn').addEventListener('click', () => {
-  state.abortProcessing = true;
+  cancelCommand();
+  setAgentStatus('Stopped');
   stopSpeak();
   showThinking(false);
   $('stop-action-btn').style.display = 'none';
@@ -1790,7 +1787,10 @@ function autoResize() {
 function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
 
 // ── Start ───────────────────────────────────────────────────────────────────
-init();
+init().catch(error => {
+  setAgentStatus('Initialization failed', true);
+  addMsg('system', `Unable to initialize the app: ${error.message}`);
+});
 
 // ═════════════════════════════════════════════════════════════════════════════
 // ISL CO-PILOT WIDGET
@@ -1923,7 +1923,7 @@ init();
   if (btnSaveGroq && inputGroqKey) {
     btnSaveGroq.addEventListener('click', async () => {
       var key = inputGroqKey.value.trim();
-      if (!key) return;
+      if (!key || key.startsWith('•')) return;
       if (window.electronAPI && window.electronAPI.setGroqKey) await window.electronAPI.setGroqKey(key);
       var st = document.getElementById('api-status');
       if (st) { st.textContent = '✓ Groq key saved.'; st.className = 'api-status ok'; setTimeout(() => { st.textContent = ''; }, 2000); }
@@ -1934,6 +1934,6 @@ init();
   (async () => {
     if (!window.electronAPI || !window.electronAPI.getGroqKey) return;
     var key = await window.electronAPI.getGroqKey();
-    if (inputGroqKey && key) inputGroqKey.value = key;
+    if (inputGroqKey && key) inputGroqKey.value = '••••••••••••';
   })();
 })();

@@ -57,7 +57,7 @@ class MistralService {
 - **Main page text** (first 2500 chars): ${(pageContext.bodyText || '').slice(0, 2500)}`
       : '## CURRENT PAGE STATE\nNo page loaded yet.';
 
-    return `You are **Ishaara**, a warm, proactive browser AI built for people with disabilities. You are an autonomous agent — you can take multi-step actions, search the web, and you FOLLOW THROUGH until tasks are complete.
+    return `You are **ZenAI**, a warm, proactive browser AI built for people with disabilities. You are an autonomous agent — you can take multi-step actions, search the web, and you FOLLOW THROUGH until tasks are complete.
 
 ${ctx}
 
@@ -174,13 +174,13 @@ Set "taskComplete": true ONLY when the task is fully done (page loaded, search c
             retries--;
             continue;
           } else {
-            throw new Error(`Rate limit exceeded (429). You only have 1 key configured. Please add more comma-separated keys to .env or settings.`);
+            throw new Error('Mistral rate limit exceeded (429). Wait before retrying and check your workspace usage limits in the Mistral console. New keys in the same workspace share its limits.');
           }
         }
         throw err;
       }
     }
-    throw new Error('All Mistral API keys are currently rate limited (429). Please add more keys or try again later.');
+    throw new Error('All configured Mistral keys are rate limited (429). Wait before retrying and check their workspace usage limits in the Mistral console.');
   }
 
   // ── JSON Parsing (with fallback) ─────────────────────────────────────────
